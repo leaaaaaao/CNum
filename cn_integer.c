@@ -1,6 +1,7 @@
 #include<stdio.h>
 #include<stdlib.h>
 #include<stdint.h>
+#include<ctype.h>
 #include"cn_integer.h"
 
 void cn_init_integer(cn_integer n)
@@ -8,29 +9,6 @@ void cn_init_integer(cn_integer n)
     n->digits = NULL;
     n->allocd = 0;
     n->size = 0;
-}
-
-void cn_int_overflow(cn_integer n)
-{
-    uint32_t i;
-    uint32_t abs_size;
-    uint32_t new_size;
-    uint32_t *new_vector;
-
-    new_size = (n->allocd == 0) ? (CN_INITIAL_ALLOC) : (n->allocd * 2);
-
-    new_vector = malloc(sizeof(*n->digits) * new_size); 
-    MEMCHECK(new_vector);
-
-    abs_size = const_abs(n->size);
-    for (i = 0; i < abs_size; i++)
-        new_vector[i] = n->digits[i];
-
-    if (n->digits)
-        free(n->digits);
-    n->digits = new_vector;
-
-    return;
 }
 
 int cn_int_equals(cn_integer a, cn_integer b) 
@@ -87,28 +65,28 @@ void cn_integer_sum(cn_integer result, cn_integer a, cn_integer b)
 }
 
 /* Support functions */
+void cn_clear_integer(cn_integer n)
+{
+    if (n->size != 0)
+        free(n->digits);
+    n->allocd = 0;
+    n->size = 0;
+    n->digits = NULL;
+}
+
 void _cn_init_integer_uint32(cn_integer n, uint32_t digit) 
 {
+    if (digit == 0) {
+        cn_init_integer(n);
+        return;
+    }
+
     n->digits = malloc(sizeof(*n->digits));
     MEMCHECK(n->digits);
 
     n->digits[0] = digit;
     n->allocd = 1;
     n->size = 1;
-}
-
-/* TODO: REMOVE LATER */
-void _cn_push_digit(cn_integer n, uint32_t digit) 
-{
-    uint32_t abs_size;
-
-    abs_size = abs(n->size);
-    if (abs_size == n->allocd)
-        cn_int_overflow(n);
-
-    n->digits[abs_size] = digit;
-    n->size += (n->size >= 0 ? 1 : -1);
-    return;
 }
 
 /* From the most significant to the less */
@@ -161,7 +139,10 @@ void _cn_add_abs(cn_integer result, cn_integer a, cn_integer b)
     int signal;
     int i;
     
-    biggest_size = max(const_abs(a->size), const_abs(b->size));
+    a_size = const_abs(a->size);
+    b_size = const_abs(b->size);
+    biggest_size = max(b_size, a_size);
+
     if (result->allocd <= biggest_size)
         _cn_realloc_integer(result, biggest_size + 1);
 
@@ -169,9 +150,6 @@ void _cn_add_abs(cn_integer result, cn_integer a, cn_integer b)
     signal = (a->size < 0) ? -1 : 1;
 
     result->size = biggest_size * signal;
-
-    a_size = const_abs(a->size);
-    b_size = const_abs(b->size);
     for (i = 0; i < biggest_size; i++) {
         a_value = (i < a_size) ? a->digits[i] : 0;
         b_value = (i < b_size) ? b->digits[i] : 0;
@@ -234,13 +212,190 @@ void _cn_sub_abs(cn_integer result, cn_integer a, cn_integer b)
             borrow = 0;
     }
 
-    for (i = abs_size - 1; i >= 0; i--)
-    {
+    for (i = abs_size - 1; i >= 0; i--) {
         if (result->digits[i] == 0)
             result->size -= result_signal;
         else
             break;
     }
+
+    return;
+}
+
+void cn_int_shift_digits_right(cn_integer n, uint32_t num_digits)
+{
+    int i;
+    uint32_t abs_size;
+    int sign;
+
+    sign = (n->size < 0) ? -1 : 1;
+    abs_size = n->size * sign;
+    if (n->allocd < abs_size + num_digits)
+        _cn_realloc_integer(n, abs_size +  num_digits);
+    n->size += num_digits * sign;
+
+    for (i = abs_size + num_digits - 1; i >= (int)num_digits; i--) {
+        n->digits[i] = n->digits[i - num_digits];
+    }
+    for (i = num_digits - 1; i >= 0; i--) {
+        n->digits[i] = 0;
+    }   
+ 
+    return;
+}
+
+void cn_int_shift_bits_right(cn_integer a, uint32_t num_bits)
+{
+    uint32_t mask;
+    uint32_t abs_size;
+    int i;
+    if (num_bits > 32) {
+        cn_int_shift_digits_right(a, num_bits / 32);
+        num_bits %= 32;
+    }
+
+    abs_size = const_abs(a->size);
+    if (a->allocd <= abs_size)
+        _cn_realloc_integer(a, abs_size + 1);
+    mask = 0;
+    for (i = 0; i < 32 - num_bits; i++) {
+        mask <<= 1;
+        mask |= 1;
+    }
+    /* num_bits most significant bits turned on */
+    mask = ~mask;
+    
+    a->digits[abs_size] = 0;
+    for (i = abs_size; i > 0; i--) {
+        a->digits[i] <<= num_bits;
+        a->digits[i] |= ((a->digits[i - 1] & mask) >> (32 - num_bits)) & ~mask;
+    }
+    a->digits[0] <<= num_bits;
+
+    if (a->digits[abs_size] != 0)
+        a->size += (a->size < 0) ? -1 : 1;
+    return;
+}
+
+void cn_integer_assign(cn_integer a, cn_integer b)
+{
+    int i;
+    if (a->allocd != 0) {
+        free(a->digits);
+    }
+
+    a->digits = malloc(sizeof(*a->digits) * b->size);
+    MEMCHECK(a->digits);
+
+    a->allocd = b->size;
+    a->size = b->size;
+    for (i = 0; i < b->size; i++) {
+        a->digits[i] = b->digits[i];
+    }
+    return;
+}
+
+void _cn_digit_product(cn_integer result, uint32_t digit_a, uint32_t digit_b)
+{
+    uint16_t a_parts[2];
+    uint16_t b_parts[2]; 
+    uint32_t result_partials[4];
+    uint16_t mask;
+    cn_integer aux[2];
+    int i;
+
+    if (result->allocd < 2) {
+       _cn_realloc_integer(result, 2); 
+    }
+
+    mask = 0xFFFF;
+    a_parts[0] = digit_a & mask;
+    a_parts[1] = (digit_a >> 16) & mask;
+
+    b_parts[0] = digit_b & mask;
+    b_parts[1] = (digit_b >> 16) & mask;
+
+    for (i = 0; i < 4; i++) {
+        result_partials[i] = (uint32_t) a_parts[(i & 2) >> 1] * (uint32_t) b_parts[i & 1];
+    }
+    
+    /* Add the first and less significant partial without shifts
+     * and the last and most significant partial shifted by one digit. */
+    _cn_init_integer_uint32(aux[0], result_partials[0]);
+    _cn_init_integer_uint32(aux[1], result_partials[3]);
+    
+    cn_int_shift_digits_right(aux[1], 1);
+    cn_integer_sum(aux[0], aux[0], aux[1]);
+
+    cn_clear_integer(aux[1]);
+
+    /* Add the intermediate partials both shifted by 16 bits */
+    for (i = 1; i <= 2; i++) {
+        _cn_init_integer_uint32(aux[1], result_partials[i]);
+        cn_int_shift_bits_right(aux[1], 16);
+        cn_integer_sum(aux[0], aux[0], aux[1]);
+        cn_clear_integer(aux[1]);    
+    }
+
+    cn_integer_assign(result, aux[0]);
+    cn_clear_integer(aux[0]);
+    if (result->digits[1] == 0) {
+        if (result->digits[0] == 0)
+            result->size = 0;
+        else
+            result->size = 1;
+    } else {
+        result->size = 2;
+    }
+    return;
+}
+
+void cn_integer_product(cn_integer result, cn_integer a, cn_integer b)
+{
+    int i, j, sign;
+    uint32_t a_size, b_size;
+    cn_integer accumulator;
+    cn_integer aux;
+
+    cn_init_integer(aux);
+    _cn_init_integer_uint32(accumulator, 0);
+
+    a_size = const_abs(a->size);
+    b_size = const_abs(b->size);
+
+    for (i = 0; i < a_size; i++) {
+        for (j = 0; j < b_size; j++) {
+            _cn_digit_product(aux, a->digits[i], b->digits[j]);
+            cn_int_shift_digits_right(aux, i + j);
+            cn_integer_sum(accumulator, accumulator, aux);
+            cn_clear_integer(aux);
+        }
+    }
+
+    cn_integer_assign(result, accumulator);
+    result->size *= ((a->size < 0) == (b->size < 0)) ? 1 : -1;
+    cn_clear_integer(accumulator);
+    return;
+}
+
+void cn_init_integer_from_string(cn_integer n, const char *string)
+{
+    cn_integer accumulator, ten, aux;
+    cn_init_integer(accumulator);
+    _cn_init_integer_uint32(ten, 10);
+    
+    while (isdigit(*string)){
+        cn_integer_product(accumulator, accumulator, ten);
+        _cn_init_integer_uint32(aux, (*string - '0'));
+        cn_integer_sum(accumulator, accumulator, aux);
+        cn_clear_integer(aux);
+
+        string++;
+    }
+
+    cn_integer_assign(n, accumulator);
+    cn_clear_integer(accumulator);
+    cn_clear_integer(ten);
 
     return;
 }
