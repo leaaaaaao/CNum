@@ -16,6 +16,7 @@ int32_t cn_int_equals(cn_integer a, cn_integer b)
     return !cn_int_compare(a, b);
 }
 
+/* Return value: -1 if a < b, 1 if a > b and 0 if a == b. Similar to strcmp from string.h */
 int32_t cn_int_compare(cn_integer a, cn_integer b)
 {
     if (a->size > b->size)
@@ -57,21 +58,10 @@ int32_t _cn_int_abs_compare(cn_integer a, cn_integer b)
     return 0;
 }
 
-void cn_int_add(cn_integer result, cn_integer a, cn_integer b)
-{
-    /* Same signal, add absolute values */
-    if ((a->size >= 0) == (b->size >= 0))
-        _cn_add_abs(result, a, b);
-    else
-        _cn_sub_abs(result, a, b); 
-
-    return;
-}
-
 /* Support functions */
 void cn_clear_integer(cn_integer n)
 {
-    if (n->size != 0)
+    if (n->digits)
         free(n->digits);
     n->allocd = 0;
     n->size = 0;
@@ -166,6 +156,36 @@ void _cn_realloc_integer(cn_integer n, uint32_t new_allocd)
     return;
 }
 
+void cn_integer_assign(cn_integer a, cn_integer b)
+{
+    uint32_t i;
+    uint32_t b_size;
+
+    b_size = CN_INT_SIZE(b);
+
+    while(a->allocd < b_size)
+        cn_int_overflow(a);
+
+    a->size = b->size;
+    for (i = 0; i < b_size; i++)
+        a->digits[i] = b->digits[i];
+    return;
+}
+
+/* Add operations*/
+void cn_int_add(cn_integer result, cn_integer a, cn_integer b)
+{
+    /* Same signal, add absolute values */
+    if ((a->size >= 0) == (b->size >= 0))
+        _cn_add_abs(result, a, b);
+    else
+        _cn_sub_abs(result, a, b);
+
+    return;
+}
+
+/* carry must contain the carry from the previous operation on the sum
+ * (0 if it is the first), and it will be updated from inside the function */
 uint32_t _cn_add_digit(uint32_t a, uint32_t b, uint32_t *carry)
 {
     uint32_t sum;
@@ -273,6 +293,7 @@ void _cn_sub_abs(cn_integer result, cn_integer a, cn_integer b)
     return;
 }
 
+/* Bitwise operations */
 void cn_int_shift_digits_right(cn_integer n, uint32_t num_digits)
 {
     uint32_t i;
@@ -337,29 +358,7 @@ void cn_int_shift_bits_right(cn_integer a, uint32_t num_bits)
     return;
 }
 
-void cn_integer_assign(cn_integer a, cn_integer b)
-{
-    uint32_t i;
-    uint32_t a_size, b_size;
-
-    if (a->allocd != 0) {
-        free(a->digits);
-    }
-
-    a_size = CN_INT_SIZE(a);
-    b_size = CN_INT_SIZE(b);
-
-    a->digits = malloc(sizeof(*a->digits) * b_size);
-    MEMCHECK(a->digits);
-
-    a->allocd = b_size;
-    a->size = b->size;
-    for (i = 0; i < b_size; i++) {
-        a->digits[i] = b->digits[i];
-    }
-    return;
-}
-
+/* Product operation */
 uint32_t _cn_digit_product(uint32_t digit_a, uint32_t digit_b, uint32_t *carry)
 {
     uint32_t result;
@@ -407,12 +406,11 @@ void cn_integer_product(cn_integer result, cn_integer a, cn_integer b)
 
     cn_init_integer(acc);
     _cn_realloc_integer(acc, a_size + b_size);
-    for (i = 0; i < a_size + b_size; i++) {
+    for (i = 0; i < a_size + b_size; i++)
         acc->digits[i] = 0;
-    }
+
     acc->size = a_size + b_size;
     acc->size *= CN_INT_SIGNAL(a) * CN_INT_SIGNAL(b);
-    
     for (i = 0; i < a_size; i++) {
         carry = 0;
         for (j = 0; j < b_size; j++) {
@@ -440,12 +438,13 @@ void cn_integer_product(cn_integer result, cn_integer a, cn_integer b)
     return;
 }
 
+/* Fancy things */
 void cn_init_integer_from_string(cn_integer n, const char *string)
 {
-    cn_integer acc, ten, aux;
+    cn_integer ten, aux;
     int32_t sign;
 
-    cn_init_integer(acc);
+    cn_init_integer(n);
     _cn_init_integer_uint32(ten, 10);
    
     if (*string == '-')
@@ -453,18 +452,15 @@ void cn_init_integer_from_string(cn_integer n, const char *string)
     else
         sign = 1;
     while (isdigit(*string)){
-        cn_integer_product(acc, acc, ten);
+        cn_integer_product(n, n, ten);
         _cn_init_integer_uint32(aux, (*string - '0'));
-        cn_int_add(acc, acc, aux);
+        cn_int_add(n, n, aux);
         cn_clear_integer(aux);
 
         string++;
     }
 
-    acc->size *= sign;
-
-    cn_integer_assign(n, acc);
-    cn_clear_integer(acc);
+    n->size *= sign;
     cn_clear_integer(ten);
 
     return;
